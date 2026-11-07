@@ -1,0 +1,221 @@
+import { BACKEND_URL } from "../config/apiConfig";
+
+const BASE = `${BACKEND_URL}/api/workspaces`;
+
+const authHeaders = (token) => ({
+  Authorization: `Bearer ${token}`,
+});
+
+/* LIST */
+export async function listWorkspaces(token) {
+  try {
+    const res = await fetch(BASE, {
+      headers: authHeaders(token),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.error("listWorkspaces error:", err);
+    return [];
+  }
+}
+
+/* CREATE */
+export async function createWorkspace(token, name, templateId = null) {
+  const payload = { name };
+  if (templateId) payload.templateId = templateId;
+
+  const res = await fetch(BASE, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.error("Create error:", text);
+    throw new Error("Failed to create workspace");
+  }
+
+  return res.json();
+}
+
+/* LIST STARTER TEMPLATES */
+export async function getStarterTemplates() {
+  try {
+    const res = await fetch(`${BASE}/templates`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.error("getStarterTemplates error:", err);
+    return [];
+  }
+}
+
+/* DELETE */
+export async function deleteWorkspace(token, id) {
+  const res = await fetch(`${BASE}/${id}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+
+  if (!res.ok) {
+    let errorMsg = "Failed to delete workspace";
+    try {
+      const data = await res.json();
+      if (data.error) errorMsg = data.error;
+    } catch {}
+    throw new Error(errorMsg);
+  }
+  return res.json();
+}
+
+/* RENAME */
+export async function renameWorkspace(token, id, name) {
+  const res = await fetch(`${BASE}/${id}/rename`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify({ name }),
+  });
+
+  if (!res.ok) throw new Error("Failed to rename workspace");
+  return res.json();
+}
+
+/* DUPLICATE */
+export async function duplicateWorkspace(token, id) {
+  const res = await fetch(`${BASE}/${id}/duplicate`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+
+  if (!res.ok) throw new Error("Failed to duplicate workspace");
+  return res.json();
+}
+
+/* PIN */
+export async function pinWorkspace(token, id, isPinned) {
+  const res = await fetch(`${BASE}/${id}/pin`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify({ isPinned }),
+  });
+
+  if (!res.ok) throw new Error("Failed to pin workspace");
+  return res.json();
+}
+
+/* GET SINGLE (EDITOR PAGE) */
+export async function getWorkspace(token, id) {
+  const res = await fetch(`${BASE}/${id}`, {
+    headers: authHeaders(token),
+  });
+
+  if (!res.ok) throw new Error("Workspace not found");
+  return res.json();
+}
+
+/* IMPORT WORKSPACE (FOLDER FROM DESKTOP) */
+export async function importWorkspace(token, { name, files }) {
+  const res = await fetch(`${BASE}/import`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify({ name, files }),
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || "Failed to import workspace");
+  }
+
+  return res.json();
+}
+
+/* EXPORT WORKSPACES (AS ZIP) */
+export async function exportWorkspaces(token, workspaceIds, defaultName = null) {
+  const res = await fetch(`${BASE}/export`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify({ workspaceIds }),
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || "Failed to export workspaces");
+  }
+
+  const blob = await res.blob();
+  let filename = defaultName ? `${defaultName}.zip` : "vocodeai-workspaces.zip";
+  const disposition = res.headers.get("Content-Disposition");
+  if (disposition && disposition.includes("filename")) {
+    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match && utf8Match[1]) {
+      try {
+        filename = decodeURIComponent(utf8Match[1]);
+      } catch (_) {}
+    } else {
+      const match = disposition.match(/filename="?([^";]+)"?/i);
+      if (match && match[1]) filename = match[1];
+    }
+  }
+
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+  return { success: true, filename };
+}
+
+/* SCAN LOCAL FOLDER BY PATH */
+export async function scanLocalFolder(token, folderPath) {
+  const res = await fetch(`${BASE}/scan-local-folder`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify({ folderPath }),
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || "Failed to scan folder");
+  }
+
+  return res.json();
+}
+
+/* GET COMMON FOLDER SUGGESTIONS */
+export async function getCommonFolders(token) {
+  try {
+    const res = await fetch(`${BASE}/common-folders`, {
+      headers: authHeaders(token),
+    });
+    if (!res.ok) return { suggestions: [] };
+    return res.json();
+  } catch (err) {
+    console.error("getCommonFolders error:", err);
+    return { suggestions: [] };
+  }
+}

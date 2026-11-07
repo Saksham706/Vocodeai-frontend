@@ -1,0 +1,616 @@
+import React, { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
+import { useWorkspace } from "../../context/WorkspaceContext";
+import { getFileIcon } from "../../utils/getFileIcon";
+import { sortTreeNodes } from "../../utils/buildTree";
+import "../../styles/explorer.css";
+import {
+  ChevronRight,
+  ChevronDown,
+  MoreVertical,
+  FilePlus2,
+  FolderPlus,
+  Pencil,
+  Trash2,
+  Copy,
+  Folder,
+  FolderOpen,
+  FileCode2,
+} from "lucide-react";
+
+export default function TreeNode({ node, path, depth = 0, collapseSignal }) {
+  const {
+    openFile,
+    addFile,
+    addFolder,
+    renameNode,
+    deleteNode,
+    activeFile,
+    dirtyFiles,
+    createRequest,
+    setCreateRequest,
+    selectedTarget,
+    setSelectedTarget,
+    currentProject,
+    currentWorkspace,
+  } = useWorkspace();
+
+  const currentPath = path ? `${path}/${node.name}` : node.name;
+  const isFile = node.type === "file";
+  const wsKey = currentProject || currentWorkspace?._id || "ws";
+  const folderKey = `vocode_folder_open_${wsKey}_${currentPath}`;
+
+  const [open, setOpen] = useState(() => {
+    if (isFile) return false;
+    try {
+      const stored = localStorage.getItem(folderKey);
+      return stored !== null ? JSON.parse(stored) : true;
+    } catch {
+      return true;
+    }
+  });
+  const [editing, setEditing] = useState(false);
+  const [tempName, setTempName] = useState(node.name);
+  const [creating, setCreating] = useState(null); // 'file' | 'folder'
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+  const inputRef = useRef(null);
+  const menuRef = useRef(null);
+  const deleteModalRef = useRef(null);
+  const isSubmittingRef = useRef(false);
+
+  useEffect(() => {
+    setTempName(node.name);
+  }, [node.name]);
+
+  const toggleFolder = () => {
+    setOpen((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(folderKey, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const openFolder = () => {
+    setOpen(true);
+    try {
+      localStorage.setItem(folderKey, JSON.stringify(true));
+    } catch {}
+  };
+
+  if (node.name === ".workspace.json") return null;
+
+  const isActiveFile = isFile && activeFile === currentPath;
+  const isSelectedFolder = !isFile && selectedTarget?.path === currentPath;
+  const isDirty = dirtyFiles.has(currentPath);
+
+  // Collapse folder when collapseSignal triggers
+  useEffect(() => {
+    if (collapseSignal > 0 && !isFile) {
+      setOpen(false);
+      try {
+        localStorage.setItem(folderKey, JSON.stringify(false));
+      } catch {}
+    }
+  }, [collapseSignal, isFile, folderKey]);
+
+  // Focus rename once when entering editing mode (never re-select while typing)
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      if (isFile) {
+        const dotIndex = node.name.lastIndexOf(".");
+        if (dotIndex > 0) {
+          inputRef.current.setSelectionRange(0, dotIndex);
+        } else {
+          inputRef.current.select();
+        }
+      } else {
+        inputRef.current.select();
+      }
+    }
+  }, [editing, isFile, node.name]);
+
+  // Focus when inline creation activates
+  useEffect(() => {
+    if (creating && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [creating]);
+
+  // Close context menu on outside click
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setMenuOpen(false);
+      }
+      if (deleteModalRef.current && !deleteModalRef.current.contains(e.target)) {
+        setShowDeleteConfirm(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Close delete modal on Escape key
+  useEffect(() => {
+    if (!showDeleteConfirm) return;
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setShowDeleteConfirm(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showDeleteConfirm]);
+
+  const submitRename = async () => {
+    if (isSubmittingRef.current) return;
+    const trimmed = tempName.trim();
+    if (trimmed && trimmed !== node.name) {
+      isSubmittingRef.current = true;
+      try {
+        await renameNode(currentPath, trimmed);
+      } catch (err) {
+        console.error("Rename submission error:", err);
+      } finally {
+        isSubmittingRef.current = false;
+      }
+    } else {
+      setTempName(node.name);
+    }
+    setEditing(false);
+  };
+
+  const cancelRename = () => {
+    setTempName(node.name);
+    setEditing(false);
+  };
+
+  const handleDelete = async () => {
+    await deleteNode(currentPath);
+    setShowDeleteConfirm(false);
+    setMenuOpen(false);
+  };
+
+  const copyRelativePath = (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(currentPath);
+    setMenuOpen(false);
+  };
+
+  // Keyboard shortcut listener for F2 and Delete on selected items
+  const handleKeyDownRow = (e) => {
+    if (isActiveFile || isSelectedFolder) {
+      if (e.key === "F2") {
+        e.preventDefault();
+        setEditing(true);
+      } else if (e.key === "Delete") {
+        e.preventDefault();
+        setShowDeleteConfirm(true);
+      }
+    }
+  };
+
+  /* ===================================================
+     FOLDER NODE RENDERING
+     =================================================== */
+  if (node.type === "folder") {
+    return (
+      <div className="tree-node-group">
+        {/* FOLDER ROW */}
+        <div
+          className={`tree-row folder ${isSelectedFolder ? "selected" : ""}`}
+          onClick={() => {
+            setSelectedTarget({ path: currentPath, type: "folder" });
+            if (!editing) toggleFolder();
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setMenuOpen(true);
+          }}
+          tabIndex={0}
+          onKeyDown={handleKeyDownRow}
+        >
+          <div className="tree-left">
+            <span
+              className="arrow-col"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleFolder();
+              }}
+            >
+              {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </span>
+
+            <span className="icon-col">
+              {getFileIcon(node.name, "folder", open)}
+            </span>
+
+            {editing ? (
+              <input
+                ref={inputRef}
+                className="inline-create-input"
+                value={tempName}
+                onChange={(e) => setTempName(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    submitRename();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    cancelRename();
+                  }
+                }}
+                onBlur={submitRename}
+              />
+            ) : (
+              <span className="folder-name-label">{node.name}</span>
+            )}
+          </div>
+
+          {/* 3-dots Menu Button */}
+          <div
+            className={`tree-right-actions ${menuOpen ? "menu-open" : ""}`}
+            ref={menuRef}
+          >
+            <button
+              className="row-menu-btn"
+              title="Folder Options"
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen((prev) => !prev);
+              }}
+            >
+              <MoreVertical size={14} />
+            </button>
+
+            {menuOpen && (
+              <div
+                className="tree-context-menu"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div
+                  className="context-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    openFolder();
+                    setCreating("file");
+                  }}
+                >
+                  <FilePlus2 size={13} />
+                  <span>New File...</span>
+                </div>
+                <div
+                  className="context-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    openFolder();
+                    setCreating("folder");
+                  }}
+                >
+                  <FolderPlus size={13} />
+                  <span>New Folder...</span>
+                </div>
+                <div
+                  className="context-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setTempName(node.name);
+                    setEditing(true);
+                  }}
+                >
+                  <Pencil size={13} />
+                  <span>Rename</span>
+                </div>
+                <div
+                  className="context-menu-item"
+                  onClick={copyRelativePath}
+                >
+                  <Copy size={13} />
+                  <span>Copy Path</span>
+                </div>
+                <div
+                  className="context-menu-item text-danger"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setShowDeleteConfirm(true);
+                  }}
+                >
+                  <Trash2 size={13} />
+                  <span>Delete</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Delete Confirmation Modal / Popover */}
+        {showDeleteConfirm && createPortal(
+          <div className="delete-confirm-overlay" onClick={() => setShowDeleteConfirm(false)}>
+            <div
+              className="delete-confirm-card"
+              ref={deleteModalRef}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="delete-modal-header">
+                <div className="delete-modal-icon-wrap">
+                  <Trash2 size={16} color="#EF4444" />
+                </div>
+                <h4>Delete Folder</h4>
+              </div>
+              <p>
+                Are you sure you want to delete <strong>{node.name}</strong> and all its contents?
+              </p>
+              <span className="delete-modal-hint">
+                This item will be safely stored in the Recycle Bin. You can restore it anytime from the Dashboard.
+              </span>
+              <div className="confirm-buttons">
+                <button
+                  type="button"
+                  className="btn-cancel"
+                  onClick={() => setShowDeleteConfirm(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn-delete"
+                  onClick={handleDelete}
+                >
+                  Move to Recycle Bin
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* Inline Folder Creation Row */}
+        {creating && (
+          <div className="tree-sub-guides" style={{ paddingLeft: "18px" }}>
+            <div className="tree-row creating-row">
+              <span className="icon-col">
+                {creating === "file" ? (
+                  <FileCode2 size={15} color="#38BDF8" />
+                ) : (
+                  <Folder size={15} color="#F59E0B" />
+                )}
+              </span>
+              <input
+                ref={inputRef}
+                className="inline-create-input"
+                placeholder={creating === "file" ? "newFile.ext" : "newFolder"}
+                onKeyDown={async (e) => {
+                  const val = e.target.value.trim();
+                  if (e.key === "Enter" && val) {
+                    if (creating === "file") await addFile(currentPath, val);
+                    else await addFolder(currentPath, val);
+                    setCreating(null);
+                    openFolder();
+                  } else if (e.key === "Escape") {
+                    setCreating(null);
+                  }
+                }}
+                onBlur={() => setCreating(null)}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* External Global Create Request targeted at this folder */}
+        {createRequest && createRequest.parent === currentPath && (
+          <div className="tree-sub-guides" style={{ paddingLeft: "18px" }}>
+            <div className="tree-row creating-row">
+              <span className="icon-col">
+                {createRequest.type === "file" ? (
+                  <FileCode2 size={15} color="#38BDF8" />
+                ) : (
+                  <Folder size={15} color="#F59E0B" />
+                )}
+              </span>
+              <input
+                autoFocus
+                className="inline-create-input"
+                placeholder={createRequest.type === "file" ? "newFile.ext" : "newFolder"}
+                onKeyDown={async (e) => {
+                  const val = e.target.value.trim();
+                  if (e.key === "Enter" && val) {
+                    if (createRequest.type === "file") await addFile(currentPath, val);
+                    else await addFolder(currentPath, val);
+                    setCreateRequest(null);
+                    openFolder();
+                  } else if (e.key === "Escape") {
+                    setCreateRequest(null);
+                  }
+                }}
+                onBlur={() => setCreateRequest(null)}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* FOLDER CHILDREN WITH VERTICAL GUIDE LINES */}
+        {open && node.children && (
+          <div className="tree-sub-guides">
+            {sortTreeNodes(node.children).map((child) => (
+              <TreeNode
+                key={child.name}
+                node={child}
+                path={currentPath}
+                depth={depth + 1}
+                collapseSignal={collapseSignal}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* ===================================================
+     FILE NODE RENDERING
+     =================================================== */
+  return (
+    <div className="tree-node-group">
+      <div
+        className={`tree-row file ${isActiveFile ? "selected active" : ""}`}
+        onClick={() => {
+          setSelectedTarget({ path: path, type: "file" });
+          if (!editing) openFile(currentPath);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setMenuOpen(true);
+        }}
+        tabIndex={0}
+        onKeyDown={handleKeyDownRow}
+      >
+        <div className="tree-left">
+          <span className="arrow-col empty" />
+
+          <span className="icon-col">
+            {getFileIcon(node.name, "file")}
+          </span>
+
+          {editing ? (
+            <input
+              ref={inputRef}
+              className="inline-create-input"
+              value={tempName}
+              onChange={(e) => setTempName(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  submitRename();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  cancelRename();
+                }
+              }}
+              onBlur={submitRename}
+            />
+          ) : (
+            <span className="file-name-label">
+              {node.name}
+              {isDirty && <span className="dirty-dot">●</span>}
+            </span>
+          )}
+        </div>
+
+        {/* 3-dots Menu Button */}
+        <div
+          className={`tree-right-actions ${menuOpen ? "menu-open" : ""}`}
+          ref={menuRef}
+        >
+          <button
+            className="row-menu-btn"
+            title="File Options"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen((prev) => !prev);
+            }}
+          >
+            <MoreVertical size={14} />
+          </button>
+
+          {menuOpen && (
+            <div
+              className="tree-context-menu"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                className="context-menu-item"
+                onClick={() => {
+                  setMenuOpen(false);
+                  openFile(currentPath);
+                }}
+              >
+                <FileCode2 size={14} />
+                <span>Open in Editor</span>
+              </div>
+              <div
+                className="context-menu-item"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setTempName(node.name);
+                  setEditing(true);
+                }}
+              >
+                <Pencil size={14} />
+                <span>Rename</span>
+              </div>
+              <div
+                className="context-menu-item"
+                onClick={copyRelativePath}
+              >
+                <Copy size={13} />
+                <span>Copy Path</span>
+              </div>
+              <div
+                className="context-menu-item text-danger"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setShowDeleteConfirm(true);
+                }}
+              >
+                <Trash2 size={13} />
+                <span>Delete</span>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Delete Confirmation Modal / Popover */}
+      {showDeleteConfirm && createPortal(
+        <div className="delete-confirm-overlay" onClick={() => setShowDeleteConfirm(false)}>
+          <div
+            className="delete-confirm-card"
+            ref={deleteModalRef}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="delete-modal-header">
+              <div className="delete-modal-icon-wrap">
+                <Trash2 size={16} color="#EF4444" />
+              </div>
+              <h4>Delete File</h4>
+            </div>
+            <p>
+              Are you sure you want to delete <strong>{node.name}</strong>?
+            </p>
+            <span className="delete-modal-hint">
+              This file will be safely stored in the Recycle Bin. You can restore it anytime from the Dashboard.
+            </span>
+            <div className="confirm-buttons">
+              <button
+                type="button"
+                className="btn-cancel"
+                onClick={() => setShowDeleteConfirm(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-delete"
+                onClick={handleDelete}
+              >
+                Move to Recycle Bin
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+}
