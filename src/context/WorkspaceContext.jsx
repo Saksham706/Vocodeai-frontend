@@ -43,6 +43,7 @@ export function WorkspaceProvider({ userId, workspaceId, children }) {
   const [fileContents, setFileContents] = useState({});
   const [dirtyFiles, setDirtyFiles] = useState(new Set());
   const [previewUrl, setPreviewUrl] = useState(null);
+  const [activeProjectPort, setActiveProjectPort] = useState(null);
 
   const [createRequest, setCreateRequest] = useState(null);
   const [currentWorkspace, setCurrentWorkspace] = useState(null);
@@ -686,8 +687,30 @@ export function WorkspaceProvider({ userId, workspaceId, children }) {
   };
 
   const deleteNode = async (path) => {
-    await fileApi.deleteNode(accessToken, workspaceId, path);
+    // 1. Optimistic immediate tree update
+    setTree((prevTree) => {
+      if (!prevTree) return prevTree;
+      const removePath = (node) => {
+        if (!node) return null;
+        if (node.path === path || node.path?.startsWith(path + "/")) {
+          return null;
+        }
+        if (Array.isArray(node.children)) {
+          return {
+            ...node,
+            children: node.children.map(removePath).filter(Boolean),
+          };
+        }
+        return node;
+      };
 
+      if (Array.isArray(prevTree)) {
+        return prevTree.map(removePath).filter(Boolean);
+      }
+      return removePath(prevTree);
+    });
+
+    // 2. Instantly close open tabs and clear editor cache for deleted nodes
     setOpenTabs((prev) => prev.filter((t) => !t.startsWith(path)));
 
     setFileContents((prev) => {
@@ -710,7 +733,15 @@ export function WorkspaceProvider({ userId, workspaceId, children }) {
       prev && prev.startsWith(path) ? null : prev
     );
 
-    await loadWorkspace();
+    // 3. Perform backend deletion asynchronously
+    try {
+      await fileApi.deleteNode(accessToken, workspaceId, path);
+    } catch (err) {
+      console.error("Delete failed on server:", err);
+    } finally {
+      // Re-sync workspace tree in background to ensure total parity
+      loadWorkspace().catch(() => {});
+    }
   };
 
   /* ================= RUN FILE ================= */
@@ -860,6 +891,9 @@ export function WorkspaceProvider({ userId, workspaceId, children }) {
       const data = await res.json();
 
       if (data.command) {
+        if (data.port) {
+          setActiveProjectPort(data.port);
+        }
         const cmdString = data.command + "\n";
         const targetTerm =
           terminals.find((t) => t.id === `project_${workspaceId}`) ||
@@ -871,7 +905,7 @@ export function WorkspaceProvider({ userId, workspaceId, children }) {
           setTerminals((prev) =>
             prev.map((t) =>
               t.id === targetTerm.id
-                ? { ...t, title: "project" }
+                ? { ...t, title: `${data.type || "project"}:${data.port || ""}` }
                 : t
             )
           );
@@ -879,7 +913,7 @@ export function WorkspaceProvider({ userId, workspaceId, children }) {
         } else {
           const terminalId = `term_${Date.now()}`;
           pendingRunRef.current = cmdString;
-          createTerminal(terminalId, "bash", true, "project");
+          createTerminal(terminalId, "bash", true, `${data.type || "project"}:${data.port || ""}`);
         }
       } else if (data.error) {
         console.warn("Run project error:", data.error);
@@ -895,28 +929,40 @@ export function WorkspaceProvider({ userId, workspaceId, children }) {
   /* ================= PREVIEW ================= */
   const refreshPreview = async (openInNewTab = true, targetFile = activeFile) => {
     const fileToPreview = targetFile || activeFile;
-    if (!fileToPreview) return;
     const isHtml =
-      fileToPreview.toLowerCase().endsWith(".html") ||
-      fileToPreview.toLowerCase().endsWith(".htm");
-    if (!isHtml) return;
+      fileToPreview &&
+      (fileToPreview.toLowerCase().endsWith(".html") ||
+       fileToPreview.toLowerCase().endsWith(".htm"));
 
-    const contentToSave = fileContentsRef.current[fileToPreview] ?? "";
+    if (isHtml) {
+      const contentToSave = fileContentsRef.current[fileToPreview] ?? "";
+      try {
+        await fileApi.saveFile(
+          accessToken,
+          workspaceId,
+          fileToPreview,
+          contentToSave
+        );
+      } catch (saveErr) {
+        console.warn("Could not save before preview:", saveErr);
+      }
 
-    try {
-      await fileApi.saveFile(
-        accessToken,
-        workspaceId,
-        fileToPreview,
-        contentToSave
-      );
-    } catch (saveErr) {
-      console.warn("Could not save before preview:", saveErr);
+      const uId = String(userId || "user");
+      const wId = String(workspaceId || "ws");
+      const url = `${backendUrl}/preview/${uId}/${wId}/${fileToPreview}`;
+
+      if (openInNewTab) {
+        window.open(url, "_blank");
+      } else {
+        setPreviewUrl(url);
+      }
+
+      return url;
     }
 
-    const uId = String(userId || "user");
-    const wId = String(workspaceId || "ws");
-    const url = `${backendUrl}/preview/${uId}/${wId}/${fileToPreview}`;
+    // Server-based project preview (Flask, Spring Boot, Angular, Flutter, MERN, FastAPI, etc.)
+    const targetPort = activeProjectPort || 3000;
+    const url = `http://localhost:${targetPort}`;
 
     if (openInNewTab) {
       window.open(url, "_blank");
@@ -928,10 +974,10 @@ export function WorkspaceProvider({ userId, workspaceId, children }) {
   };
 
   useEffect(() => {
-    if (!activeFile?.endsWith(".html") && !activeFile?.endsWith(".htm")) {
+    if (!activeFile?.endsWith(".html") && !activeFile?.endsWith(".htm") && !activeProjectPort) {
       setPreviewUrl(null);
     }
-  }, [activeFile]);
+  }, [activeFile, activeProjectPort]);
 
   /* ================= CONTEXT ================= */
   return (
@@ -979,6 +1025,8 @@ export function WorkspaceProvider({ userId, workspaceId, children }) {
         setProblems,
         outputLogs,
         setOutputLogs,
+        activeProjectPort,
+        setActiveProjectPort,
         isSplitEditor,
         setIsSplitEditor,
         splitEditorFile,
