@@ -1,5 +1,7 @@
-const BASE = "http://localhost:8000/api/git";
-const AUTH_BASE = "http://localhost:8000/api/auth";
+import { BACKEND_URL } from "../config/apiConfig";
+
+const BASE = `${BACKEND_URL}/api/git`;
+const AUTH_BASE = `${BACKEND_URL}/api/auth`;
 
 function authHeaders(token) {
   return {
@@ -59,11 +61,19 @@ export async function commitGit(token, workspaceId, message, stageAll = false, a
   return handleResponse(res);
 }
 
-export async function generateAiCommitMessage(token, workspaceId) {
+export async function generateAiCommitMessage(token, workspaceId, aiConfig = {}) {
   const res = await fetch(`${BASE}/generate-commit-message`, {
     method: "POST",
     headers: authHeaders(token),
-    body: JSON.stringify({ workspaceId }),
+    body: JSON.stringify({
+      workspaceId,
+      aiConfig: {
+        provider: aiConfig?.provider,
+        model: aiConfig?.model,
+        authMethod: aiConfig?.authMethod,
+        projectId: aiConfig?.projectId,
+      },
+    }),
   });
   return handleResponse(res);
 }
@@ -137,6 +147,15 @@ export async function pullGit(token, workspaceId, remote = "origin", branch = nu
   return handleResponse(res);
 }
 
+export async function syncGit(token, workspaceId, remote = "origin", branch = null, tokenAuth = null) {
+  const res = await fetch(`${BASE}/sync`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ workspaceId, remote, branch, token: tokenAuth }),
+  });
+  return handleResponse(res);
+}
+
 export async function cloneGitRepo(token, workspaceId, repoUrl, tokenAuth = null, branch = null) {
   const res = await fetch(`${BASE}/clone`, {
     method: "POST",
@@ -174,7 +193,7 @@ export async function connectGithubWithToken(token, ghToken) {
 
 export function getGithubOAuthUrl(workspaceId, token) {
   const origin = window.location.origin;
-  return `http://localhost:8000/api/auth/github?workspaceId=${encodeURIComponent(
+  return `${BACKEND_URL}/api/auth/github?workspaceId=${encodeURIComponent(
     workspaceId || ""
   )}&token=${encodeURIComponent(token || "")}&origin=${encodeURIComponent(origin)}`;
 }

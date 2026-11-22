@@ -21,9 +21,14 @@ import SettingsView from "../components/settings/SettingsView";
 import SourceControl from "../components/git/SourceControl";
 import GitDiffEditor from "../components/git/GitDiffEditor";
 import ExtensionsPanel from "../components/extensions/ExtensionsPanel";
+import ExtensionDetailsView from "../components/extensions/ExtensionDetailsView";
+import CommandPalette from "../components/common/CommandPalette";
+import StatusBar from "../components/layout/StatusBar";
+import { MARKETPLACE_EXTENSIONS } from "../config/marketplaceExtensions";
 import {
   applyThemeExtension,
   getActiveThemeExtension,
+  THEME_DEFINITIONS,
 } from "../utils/themeRegistry";
 import {
   getGitStatus,
@@ -31,12 +36,19 @@ import {
   unstageGitFiles,
   discardGitChanges,
 } from "../services/gitApi";
+import { saveFile } from "../services/fileApi";
 
-import { AIProvider } from "../context/AIContext";
-import { X } from "lucide-react";
+import { AIProvider, useAI } from "../context/AIContext";
+import { X, Puzzle } from "lucide-react";
 import DashboardBackground from "../components/DashboardBackground";
 
 import "../styles/workspace.css";
+
+const DEFAULT_INSTALLED_EXTENSION_IDS = [
+  "ext-vocode-ai-copilot",
+  "ext-theme-one-dark-pro",
+  "ext-prettier-formatter",
+];
 
 /* ================= INNER IDE LAYOUT ================= */
 
@@ -51,7 +63,9 @@ function WorkspaceLayout() {
     openNewTerminal,
     previewUrl,
     activeFile,
+    fileContents,
     currentProject,
+    currentWorkspace,
     tree,
     openFile,
     runCode,
@@ -65,18 +79,145 @@ function WorkspaceLayout() {
     setProblems,
     outputLogs,
     setOutputLogs,
+    activeProjectPort,
     isSplitEditor,
     splitEditorFile,
     closeSplitEditor,
+    closeTab,
+    deleteNode,
+    applyFileChange,
+    loadWorkspace,
   } = useWorkspace();
 
   const location = useLocation();
   const navigate = useNavigate();
   const { id: workspaceId } = useParams();
-  const { accessToken } = useAuth();
+  const { user, accessToken } = useAuth();
+  const { aiConfig } = useAI();
+
+  // Remember active workspace ID for Voco and instant redirects
+  useEffect(() => {
+    if (workspaceId) {
+      localStorage.setItem("vocode_recent_workspace", workspaceId);
+    }
+  }, [workspaceId]);
 
   // Settings Panel State
   const [showSettings, setShowSettings] = useState(false);
+
+  // Command Palette & Extension Details State
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [viewingExtension, setViewingExtension] = useState(null);
+  const [installedExtensionIds, setInstalledExtensionIds] = useState(() => {
+    try {
+      const saved = localStorage.getItem("vocode_installed_extensions");
+      if (saved) return new Set(JSON.parse(saved));
+    } catch {}
+    return new Set(DEFAULT_INSTALLED_EXTENSION_IDS);
+  });
+
+  // Antigravity installed state
+  const [isAntigravityInstalled, setIsAntigravityInstalled] = useState(() => {
+    try {
+      const saved = localStorage.getItem("vocode_installed_extensions");
+      if (saved) return JSON.parse(saved).includes("google.google-antigravity");
+    } catch {}
+    return false;
+  });
+
+  useEffect(() => {
+    const handleInstalled = (e) => {
+      const extensionId = e.detail?.extensionId || e.detail?.extension?.id;
+      if (extensionId) {
+        setInstalledExtensionIds((prev) => new Set([...prev, extensionId]));
+      }
+      if (extensionId === "google.google-antigravity") {
+        setIsAntigravityInstalled(true);
+      }
+    };
+    const handleUninstalled = (e) => {
+      const extensionId = e.detail?.extensionId || e.detail?.extension?.id;
+      if (extensionId) {
+        setInstalledExtensionIds((prev) => {
+          const next = new Set(prev);
+          next.delete(extensionId);
+          return next;
+        });
+      }
+      if (extensionId === "google.google-antigravity") {
+        setIsAntigravityInstalled(false);
+      }
+    };
+    const handleOpenExtDetails = (e) => {
+      if (e.detail?.extension) {
+        setViewingExtension(e.detail.extension);
+      }
+    };
+    const handleOpenCmdPalette = () => {
+      setShowCommandPalette(true);
+    };
+
+    window.addEventListener("vocode-extension-installed", handleInstalled);
+    window.addEventListener("vocode-extension-uninstalled", handleUninstalled);
+    window.addEventListener("vocode-open-extension-details", handleOpenExtDetails);
+    window.addEventListener("vocode-open-command-palette", handleOpenCmdPalette);
+    return () => {
+      window.removeEventListener("vocode-extension-installed", handleInstalled);
+      window.removeEventListener("vocode-extension-uninstalled", handleUninstalled);
+      window.removeEventListener("vocode-open-extension-details", handleOpenExtDetails);
+      window.removeEventListener("vocode-open-command-palette", handleOpenCmdPalette);
+    };
+  }, []);
+
+  const setExtensionInstalled = (extensionId, installed) => {
+    setInstalledExtensionIds((prev) => {
+      const next = new Set(prev);
+      if (installed) next.add(extensionId);
+      else next.delete(extensionId);
+      try {
+        localStorage.setItem("vocode_installed_extensions", JSON.stringify(Array.from(next)));
+      } catch {}
+      return next;
+    });
+    if (extensionId === "google.google-antigravity") {
+      setIsAntigravityInstalled(installed);
+    }
+    window.dispatchEvent(
+      new CustomEvent(installed ? "vocode-extension-installed" : "vocode-extension-uninstalled", {
+        detail: { extensionId },
+      })
+    );
+  };
+
+  const handleInstallExtension = (extension) => {
+    setExtensionInstalled(extension.id, true);
+  };
+
+  const handleUninstallExtension = (extension) => {
+    setExtensionInstalled(extension.id, false);
+  };
+
+  const handleInstallAntigravity = () => {
+    setExtensionInstalled("google.google-antigravity", true);
+  };
+
+  const handleUninstallAntigravity = () => {
+    setExtensionInstalled("google.google-antigravity", false);
+  };
+
+  const handleFocusAntigravity = () => {
+    setActivityTab("antigravity");
+    setIsExplorerOpen(true);
+    setShowAI(false);
+    window.dispatchEvent(new CustomEvent("vocode-antigravity-focus"));
+  };
+
+  const handleNewAntigravityConversation = () => {
+    setActivityTab("antigravity");
+    setIsExplorerOpen(true);
+    setShowAI(false);
+    window.dispatchEvent(new CustomEvent("vocode-antigravity-new-chat"));
+  };
 
   // Activity Bar Tab & Explorer State (must be initialized before keyboard shortcuts hook)
   const [activityTab, setActivityTab] = useState(() => {
@@ -166,6 +307,13 @@ function WorkspaceLayout() {
         return;
       }
 
+      // Ctrl+Shift+P / Cmd+Shift+P / F1: Command Palette
+      if ((isCmdOrCtrl && e.shiftKey && key === "p") || e.key === "F1") {
+        e.preventDefault();
+        setShowCommandPalette((prev) => !prev);
+        return;
+      }
+
       // Ctrl+Shift+A or Ctrl+Alt+A: Toggle AI Assistant
       if (isCmdOrCtrl && (e.shiftKey || e.altKey) && key === "a") {
         e.preventDefault();
@@ -191,6 +339,25 @@ function WorkspaceLayout() {
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
+    document.body.setAttribute("data-theme", theme);
+    if (theme === "light") {
+      const activeExtTheme = getActiveThemeExtension();
+      if (activeExtTheme && THEME_DEFINITIONS[activeExtTheme]?.cssVariables) {
+        Object.keys(THEME_DEFINITIONS[activeExtTheme].cssVariables).forEach((key) => {
+          document.documentElement.style.removeProperty(key);
+        });
+      }
+      if (window.monaco?.editor) {
+        window.monaco.editor.setTheme("light");
+      }
+    } else {
+      const activeExtTheme = getActiveThemeExtension();
+      if (activeExtTheme) {
+        applyThemeExtension(activeExtTheme);
+      } else if (window.monaco?.editor) {
+        window.monaco.editor.setTheme("vs-dark");
+      }
+    }
   }, [theme]);
 
   // Initialize and apply saved theme extension
@@ -483,22 +650,410 @@ function WorkspaceLayout() {
     }
   };
 
-  const handleMainRun = () => {
+  const handleMainRun = (file = null) => {
+    let target = file || activeFile || (openTabs && openTabs.length > 0 ? openTabs[0] : null);
+    if (file && activeFile && activeFile.endsWith(file)) {
+      target = activeFile;
+    }
+
+    // If file was specified (e.g. "ThreeSum.java") but not matching activeFile directly, search tree
+    if (file && tree) {
+      const fileLower = file.toLowerCase();
+      const fileNoExt = fileLower.replace(/\.[^.]+$/, "");
+      const getList = (nodeOrList) => {
+        if (!nodeOrList) return [];
+        if (Array.isArray(nodeOrList)) return nodeOrList;
+        if (Array.isArray(nodeOrList.children)) return nodeOrList.children;
+        return [nodeOrList];
+      };
+      const findFilePath = (input) => {
+        const nodes = getList(input);
+        for (const n of nodes) {
+          if (n.type === "file") {
+            const nLower = (n.name || "").toLowerCase();
+            const pLower = (n.path || "").toLowerCase();
+            const nNoExt = nLower.replace(/\.[^.]+$/, "");
+            if (
+              nLower === fileLower ||
+              pLower === fileLower ||
+              pLower.endsWith("/" + fileLower) ||
+              nNoExt === fileNoExt
+            ) {
+              return n.path;
+            }
+          }
+          if (n.children) {
+            const found = findFilePath(n.children);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      const resolved = findFilePath(tree);
+      if (resolved) target = resolved;
+    }
+
     const isHtml =
-      activeFile?.toLowerCase().endsWith(".html") ||
-      activeFile?.toLowerCase().endsWith(".htm");
+      target?.toLowerCase().endsWith(".html") ||
+      target?.toLowerCase().endsWith(".htm");
     if (isHtml) {
-      refreshPreview(true);
+      refreshPreview(true, target);
       return;
     }
     setShowTerminal(true);
     setActiveTermTab("terminal");
-    if (activeFile) {
-      runCode();
+    if (target) {
+      runCode(target);
     } else {
       runProject();
     }
   };
+
+  // Handle Voice Assistant (Voco) system actions
+  useEffect(() => {
+    const handleVoiceAction = async (e) => {
+      const { action, payload } = e.detail || {};
+      if (action === "open-terminal" || action === "toggle-terminal") {
+        setShowTerminal(true);
+        setActiveTermTab("terminal");
+        if (!terminals || terminals.length === 0) {
+          openNewTerminal("bash");
+        }
+      } else if (action === "close-terminal") {
+        setShowTerminal(false);
+      } else if (action === "close-file") {
+        let fileTarget = payload?.target || payload?.name || activeFile;
+        fileTarget = typeof fileTarget === "string" ? fileTarget.replace(/["']/g, "").trim() : "";
+        if (fileTarget && fileTarget !== activeFile && tree) {
+          const fileLower = fileTarget.toLowerCase();
+          const fileNoExt = fileLower.replace(/\.[^.]+$/, "");
+          const getList = (n) => (!n ? [] : Array.isArray(n) ? n : Array.isArray(n.children) ? n.children : [n]);
+          const findFilePath = (input) => {
+            for (const n of getList(input)) {
+              if (n.type === "file") {
+                const nLower = (n.name || "").toLowerCase();
+                const pLower = (n.path || "").toLowerCase();
+                const nNoExt = nLower.replace(/\.[^.]+$/, "");
+                if (
+                  nLower === fileLower ||
+                  pLower === fileLower ||
+                  pLower.endsWith("/" + fileLower) ||
+                  nNoExt === fileNoExt
+                ) {
+                  return n.path;
+                }
+              }
+              if (n.children) {
+                const found = findFilePath(n.children);
+                if (found) return found;
+              }
+            }
+            return null;
+          };
+          const resolved = findFilePath(tree);
+          if (resolved) fileTarget = resolved;
+        }
+        if (fileTarget) {
+          closeTab(fileTarget);
+        } else if (activeFile) {
+          closeTab(activeFile);
+        }
+      } else if (action === "delete-file" || action === "delete_file") {
+        let rawFileName = (payload?.path || payload?.name || payload?.target || "").replace(/["']/g, "").trim();
+        rawFileName = rawFileName.replace(/\s+file$/i, "").trim();
+        let fileTarget = rawFileName;
+        if (tree && rawFileName) {
+          const findFilePath = (input) => {
+            const nodes = getList(input);
+            for (const n of nodes) {
+              if (n.type === "file") {
+                const nLower = (n.name || "").toLowerCase();
+                const pLower = (n.path || "").toLowerCase();
+                const targetLower = rawFileName.toLowerCase();
+                if (nLower === targetLower || pLower === targetLower || pLower.endsWith("/" + targetLower)) {
+                  return n.path;
+                }
+              }
+              if (n.children) {
+                const found = findFilePath(n.children);
+                if (found) return found;
+              }
+            }
+            return null;
+          };
+          const resolved = findFilePath(tree);
+          if (resolved) fileTarget = resolved;
+        }
+        if (fileTarget) {
+          closeTab(fileTarget);
+          try {
+            await deleteNode(fileTarget);
+          } catch (err) {
+            console.warn("Failed to delete node:", err);
+          }
+          await loadWorkspace();
+        }
+      } else if (action === "write-file" || action === "write_file") {
+        const filePath = payload?.path || payload?.name;
+        const content = payload?.content;
+        if (filePath && content !== undefined) {
+          let resolvedPath = filePath;
+          if (tree && !filePath.includes("/")) {
+            const findFilePath = (input) => {
+              const nodes = getList(input);
+              for (const n of nodes) {
+                if (n.type === "file") {
+                  const nLower = (n.name || "").toLowerCase();
+                  if (nLower === filePath.toLowerCase()) return n.path;
+                }
+                if (n.children) {
+                  const found = findFilePath(n.children);
+                  if (found) return found;
+                }
+              }
+              return null;
+            };
+            const found = findFilePath(tree);
+            if (found) resolvedPath = found;
+          }
+          await applyFileChange(resolvedPath, content);
+        }
+      } else if (action === "run-code") {
+        let fileTarget = payload?.target || payload?.name || "";
+        fileTarget = typeof fileTarget === "string" ? fileTarget.replace(/["']/g, "").trim() : "";
+        handleMainRun(fileTarget || null);
+      } else if (action === "create-file") {
+        if (!isExplorerOpen) setIsExplorerOpen(true);
+        setCreateRequest({
+          type: "file",
+          parent: selectedTarget?.path || "",
+          initialName: payload?.name || "",
+        });
+      } else if (action === "create-folder") {
+        if (!isExplorerOpen) setIsExplorerOpen(true);
+        setCreateRequest({
+          type: "folder",
+          parent: selectedTarget?.path || "",
+          initialName: payload?.name || "",
+        });
+      } else if (action === "toggle-explorer") {
+        toggleExplorer();
+      } else if (action === "open-git") {
+        setActivityTab("git");
+        setIsExplorerOpen(true);
+      } else if (action === "toggle-settings") {
+        setShowSettings((prev) => !prev);
+      } else if (action === "toggle-ai") {
+        setShowAI((prev) => !prev);
+      } else if (action === "save-file") {
+        if (activeFile && workspaceId) {
+          saveFile(accessToken, workspaceId, activeFile, fileContents?.[activeFile] || "")
+            .catch((err) => console.warn("Save failed:", err));
+        }
+      } else if (action === "open-folder") {
+        const rawFolderName = (payload?.name || payload?.target || "").replace(/["']/g, "").trim();
+        setActivityTab("explorer");
+        setIsExplorerOpen(true);
+        if (rawFolderName && tree) {
+          const targetLower = rawFolderName.toLowerCase();
+          const targetClean = targetLower.replace(/[\s_.-]/g, "");
+
+          const getList = (nodeOrList) => {
+            if (!nodeOrList) return [];
+            if (Array.isArray(nodeOrList)) return nodeOrList;
+            if (Array.isArray(nodeOrList.children)) return nodeOrList.children;
+            return [nodeOrList];
+          };
+
+          const findFolderNode = (input) => {
+            const nodes = getList(input);
+            for (const n of nodes) {
+              if (n.type === "folder") {
+                const nLower = (n.name || "").toLowerCase();
+                const pLower = (n.path || "").toLowerCase();
+                const nClean = nLower.replace(/[\s_.-]/g, "");
+                if (
+                  nLower === targetLower ||
+                  pLower === targetLower ||
+                  pLower.endsWith("/" + targetLower) ||
+                  nClean === targetClean ||
+                  nLower.includes(targetLower)
+                ) {
+                  return n;
+                }
+              }
+              if (n.children) {
+                const found = findFolderNode(n.children);
+                if (found) return found;
+              }
+            }
+            return null;
+          };
+
+          const matchedFolder = findFolderNode(tree);
+          const targetPath = matchedFolder ? matchedFolder.path : rawFolderName;
+          setSelectedTarget({ path: targetPath, type: "folder" });
+          const wsKey = currentProject || currentWorkspace?._id || "ws";
+          try {
+            localStorage.setItem(`vocode_folder_open_${wsKey}_${targetPath}`, JSON.stringify(true));
+          } catch {}
+          window.dispatchEvent(
+            new CustomEvent("vocode-expand-folder", {
+              detail: { path: targetPath, name: rawFolderName },
+            })
+          );
+        }
+      } else if (action === "open-file") {
+        let rawFileName = (payload?.name || payload?.target || "").replace(/["']/g, "").trim();
+        rawFileName = rawFileName
+          .replace(/\s+dot\s+/gi, ".")
+          .replace(/\.\s+/g, ".")
+          .replace(/\s+file$/i, "")
+          .trim();
+
+        if (tree) {
+          const targetLower = rawFileName.toLowerCase();
+          const targetNoExt = targetLower.replace(/\.[^.]+$/, "");
+          const targetClean = targetLower.replace(/[\s_.-]/g, "");
+          const targetCleanNoExt = targetNoExt.replace(/[\s_.-]/g, "");
+
+          const getList = (nodeOrList) => {
+            if (!nodeOrList) return [];
+            if (Array.isArray(nodeOrList)) return nodeOrList;
+            if (Array.isArray(nodeOrList.children)) return nodeOrList.children;
+            return [nodeOrList];
+          };
+
+          let candidateNode = null;
+
+          const searchNodes = (input) => {
+            const nodes = getList(input);
+            for (const n of nodes) {
+              if (n.type === "file") {
+                const nLower = (n.name || "").toLowerCase();
+                const pLower = (n.path || "").toLowerCase();
+                const nNoExt = nLower.replace(/\.[^.]+$/, "");
+                const nClean = nLower.replace(/[\s_.-]/g, "");
+                const nCleanNoExt = nNoExt.replace(/[\s_.-]/g, "");
+
+                // Tier 1: Exact match on name or path
+                if (
+                  nLower === targetLower ||
+                  pLower === targetLower ||
+                  pLower.endsWith("/" + targetLower)
+                ) {
+                  candidateNode = n;
+                  return true;
+                }
+
+                // Tier 2: Match without extension (e.g. "ThreeSum" -> "ThreeSum.java")
+                if (nNoExt === targetNoExt || nCleanNoExt === targetCleanNoExt) {
+                  candidateNode = n;
+                  return true;
+                }
+
+                // Tier 3: Match ignoring spaces/underscores/hyphens
+                if (nClean === targetClean) {
+                  candidateNode = n;
+                  return true;
+                }
+
+                // Tier 4: Partial / substring match
+                if (
+                  (!candidateNode && targetNoExt.length > 2 && nNoExt.includes(targetNoExt)) ||
+                  (!candidateNode && nNoExt.length > 2 && targetNoExt.includes(nNoExt))
+                ) {
+                  candidateNode = n;
+                }
+              }
+              if (n.children && searchNodes(n.children)) {
+                return true;
+              }
+            }
+            return false;
+          };
+
+          searchNodes(tree);
+
+          if (candidateNode) {
+            if (candidateNode.path && candidateNode.path.includes("/")) {
+              const parts = candidateNode.path.split("/");
+              const parentFolder = parts.slice(0, -1).join("/");
+              const wsKey = currentProject || currentWorkspace?._id || "ws";
+              try {
+                localStorage.setItem(`vocode_folder_open_${wsKey}_${parentFolder}`, JSON.stringify(true));
+              } catch {}
+              window.dispatchEvent(
+                new CustomEvent("vocode-expand-folder", {
+                  detail: { path: parentFolder },
+                })
+              );
+            }
+            setIsExplorerOpen(true);
+            openFile(candidateNode.path);
+          } else if (rawFileName) {
+            openFile(rawFileName);
+          }
+        } else if (rawFileName) {
+          openFile(rawFileName);
+        }
+      }
+    };
+
+    window.addEventListener("vocode-voice-action", handleVoiceAction);
+    return () => window.removeEventListener("vocode-voice-action", handleVoiceAction);
+  }, [
+    selectedTarget,
+    isExplorerOpen,
+    activeFile,
+    workspaceId,
+    accessToken,
+    fileContents,
+    toggleExplorer,
+    handleMainRun,
+    currentProject,
+    currentWorkspace,
+    tree,
+    openFile,
+    terminals,
+    openNewTerminal,
+    closeTab,
+    deleteNode,
+    applyFileChange,
+    loadWorkspace,
+  ]);
+
+  // Keep activeFile synchronized in localStorage for voice AI context
+  useEffect(() => {
+    try {
+      if (activeFile) {
+        localStorage.setItem("vocode_active_file", activeFile);
+      } else {
+        localStorage.removeItem("vocode_active_file");
+      }
+    } catch {}
+  }, [activeFile]);
+
+  // Execute any pending voice command queued before landing into this workspace
+  useEffect(() => {
+    try {
+      const pendingRaw = sessionStorage.getItem("vocode_pending_voice_action");
+      if (pendingRaw) {
+        sessionStorage.removeItem("vocode_pending_voice_action");
+        const pending = JSON.parse(pendingRaw);
+        const timer = setTimeout(() => {
+          window.dispatchEvent(
+            new CustomEvent("vocode-voice-action", {
+              detail: pending,
+            })
+          );
+        }, 450);
+        return () => clearTimeout(timer);
+      }
+    } catch (e) {
+      console.warn("Failed to replay pending voice command:", e);
+    }
+  }, [workspaceId, tree]);
 
   return (
     <div className={`ide-app ${theme}`}>
@@ -541,6 +1096,7 @@ function WorkspaceLayout() {
           setIsExplorerOpen(true);
         }}
         onOpenSettings={() => setShowSettings(true)}
+        onOpenCommandPalette={() => setShowCommandPalette(true)}
       />
 
       {/* 2. MAIN WORKSPACE CONTAINER */}
@@ -576,12 +1132,21 @@ function WorkspaceLayout() {
           gitChangesCount={gitChangesCount}
         />
 
-        {/* ===== LEFT PERSISTENT FILE EXPLORER ===== */}
+        {/* ===== LEFT PERSISTENT FILE EXPLORER & VIEWS ===== */}
         {isExplorerOpen && (
-          <div className="ide-sidebar-wrapper" style={{ width: sidebarWidth }}>
+          <div
+            className="ide-sidebar-wrapper"
+            style={{
+              width:
+                activityTab === "antigravity"
+                  ? Math.max(sidebarWidth, 380)
+                  : sidebarWidth,
+            }}
+          >
             {activityTab === "git" ? (
               <SourceControl
                 workspaceId={workspaceId || currentProject}
+                aiConfig={aiConfig}
                 onOpenDiff={(diffData) => setActiveDiff(diffData)}
                 onCloseSidebar={() => setIsExplorerOpen(false)}
               />
@@ -599,13 +1164,19 @@ function WorkspaceLayout() {
               />
             ) : activityTab === "extensions" ? (
               <ExtensionsPanel onClose={() => setIsExplorerOpen(false)} />
+            ) : activityTab === "antigravity" ? (
+              <AIChat
+                workspaceId={workspaceId || currentProject}
+                onClose={() => setIsExplorerOpen(false)}
+                isSidebar={true}
+              />
             ) : (
               <Sidebar onClose={() => setIsExplorerOpen(false)} />
             )}
             <div
               className="ide-sidebar-resizer"
               onMouseDown={startSidebarResize}
-              title="Drag to resize explorer"
+              title="Drag to resize sidebar"
             />
           </div>
         )}
@@ -617,6 +1188,56 @@ function WorkspaceLayout() {
               workspaceId={workspaceId || currentProject}
               onBack={() => setShowSettings(false)}
             />
+          ) : viewingExtension ? (
+            <div
+              className="ide-extension-details-wrapper"
+              style={{
+                height: "100%",
+                display: "flex",
+                flexDirection: "column",
+                background: "#0d151c",
+              }}
+            >
+              <div className="ide-tabs-bar">
+                <div className="ide-tabs-list">
+                  <div
+                    className="ide-tab"
+                    onClick={() => setViewingExtension(null)}
+                    style={{ cursor: "pointer" }}
+                  >
+                    <span className="tab-name">Welcome</span>
+                  </div>
+                  <div className="ide-tab active">
+                    <Puzzle size={13} style={{ marginRight: 5, color: "#38bdf8" }} />
+                    <span className="tab-name">
+                      Extension: {viewingExtension.name}
+                    </span>
+                    <button
+                      className="tab-close-btn"
+                      onClick={() => setViewingExtension(null)}
+                      title="Close Tab"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div style={{ flex: 1, overflow: "hidden" }}>
+                <ExtensionDetailsView
+                  extension={viewingExtension}
+                  isInstalled={
+                    installedExtensionIds.has(viewingExtension.id)
+                  }
+                  onInstall={handleInstallExtension}
+                  onUninstall={handleUninstallExtension}
+                  onOpenAI={() => {
+                    setViewingExtension(null);
+                    handleFocusAntigravity();
+                  }}
+                  onClose={() => setViewingExtension(null)}
+                />
+              </div>
+            </div>
           ) : activeDiff ? (
             <GitDiffEditor
               diffData={activeDiff}
@@ -703,7 +1324,7 @@ function WorkspaceLayout() {
         </div>
 
         {/* ===== RIGHT COLUMN: FULL-HEIGHT AI ASSISTANT ===== */}
-        {showAI && (
+        {showAI && activityTab !== "antigravity" && (
           <div
             className={`ide-ai-sidebar-wrapper ${isAiMaximized ? "maximized" : ""}`}
             style={{ width: isAiMaximized ? "65%" : `${aiWidth}px` }}
@@ -722,6 +1343,77 @@ function WorkspaceLayout() {
           </div>
         )}
       </div>
+
+      {/* 3. VS CODE BOTTOM STATUS BAR */}
+      <StatusBar
+        theme={theme}
+        userName={user?.name || user?.username || "Saksham"}
+        gitBranch="main"
+        gitChangesCount={gitChangesCount}
+        problemCount={problems ? problems.length : 0}
+        activeLanguage={
+          activeFile
+            ? activeFile.split(".").pop().toUpperCase()
+            : "JavaScript"
+        }
+        activePort={activeProjectPort}
+        onToggleTerminal={toggleTerminal}
+        onTogglePreview={() => refreshPreview(true)}
+        onFocusAntigravity={handleFocusAntigravity}
+        isAntigravityInstalled={isAntigravityInstalled}
+      />
+
+      {/* 4. VS CODE COMMAND PALETTE */}
+      <CommandPalette
+        isOpen={showCommandPalette}
+        onClose={() => setShowCommandPalette(false)}
+        isAntigravityInstalled={isAntigravityInstalled}
+        onFocusAntigravity={handleFocusAntigravity}
+        onNewAntigravityConversation={handleNewAntigravityConversation}
+        onSelectAIModel={() => {
+          setShowAI(true);
+        }}
+        onToggleExplorer={toggleExplorer}
+        onToggleTerminal={toggleTerminal}
+        onOpenExtensions={() => {
+          setActivityTab("extensions");
+          setIsExplorerOpen(true);
+        }}
+        onOpenGit={() => {
+          setActivityTab("git");
+          setIsExplorerOpen(true);
+        }}
+        onOpenSearch={() => {
+          setActivityTab("search");
+          setIsExplorerOpen(true);
+        }}
+        onOpenDebug={() => {
+          setActivityTab("debug");
+          setIsExplorerOpen(true);
+        }}
+        onOpenSettings={() => setShowSettings(true)}
+        onNewFile={() => {
+          if (!isExplorerOpen) setIsExplorerOpen(true);
+          setCreateRequest({
+            type: "file",
+            parent: selectedTarget?.path || "",
+          });
+        }}
+        onNewFolder={() => {
+          if (!isExplorerOpen) setIsExplorerOpen(true);
+          setCreateRequest({
+            type: "folder",
+            parent: selectedTarget?.path || "",
+          });
+        }}
+        onSaveFile={() => {
+          if (activeFile && workspaceId) {
+            saveFile(accessToken, workspaceId, activeFile, fileContents?.[activeFile] || "")
+              .catch((err) => console.warn("Save failed:", err));
+          }
+        }}
+        onInstallAntigravity={handleInstallAntigravity}
+      />
     </div>
   );
 }

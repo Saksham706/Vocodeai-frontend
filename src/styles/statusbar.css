@@ -1,0 +1,111 @@
+/* ================= STATUS BAR STYLING ================= */
+
+.ide-status-bar {
+  height: 22px;
+  min-height: 22px;
+  background-color: #007acc;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  font-size: 11.5px;
+  user-select: none;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  z-index: 100;
+  box-sizing: border-box;
+}
+
+.status-bar-left,
+.status-bar-right {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  height: 100%;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  white-space: nowrap;
+}
+
+.status-item:hover {
+  background-color: rgba(255, 255, 255, 0.18);
+}
+
+.status-remote-badge {
+  background-color: #16825d;
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.status-remote-badge .remote-icon {
+  font-family: monospace;
+  font-weight: 700;
+  margin-right: 4px;
+  font-size: 10px;
+}
+
+.status-live-btn {
+  font-weight: 500;
+}
+
+.status-antigravity-pill {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+  margin: 0 4px;
+  font-weight: 600;
+}
+
+.status-antigravity-pill:hover {
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.status-voco-pill {
+  font-weight: 600;
+  color: #00f2fe;
+}
+
+.status-voco-pill:hover {
+  background: rgba(0, 242, 254, 0.15) !important;
+  color: #ffffff;
+}
+
+/* ========================================================
+   LIGHT & DARK MODE OVERRIDES FOR STATUS BAR
+   ======================================================== */
+
+[data-theme="dark"] .ide-status-bar {
+  background-color: #03150d;
+  border-top: 1px solid rgba(16, 185, 129, 0.15);
+  color: #91A89B;
+}
+
+[data-theme="light"] .ide-status-bar {
+  background-color: #F1F5F9 !important;
+  border-top: 1px solid rgba(0, 0, 0, 0.09) !important;
+  color: #334155 !important;
+}
+
+[data-theme="light"] .status-item:hover {
+  background-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+[data-theme="light"] .status-remote-badge {
+  background-color: #0ea5e9 !important;
+  color: #ffffff !important;
+}
+
+[data-theme="light"] .status-antigravity-pill {
+  background: rgba(0, 0, 0, 0.06) !important;
+  color: #334155 !important;
+}
+
+[data-theme="light"] .status-antigravity-pill:hover {
+  background: rgba(0, 0, 0, 0.12) !important;
+}
+

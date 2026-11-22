@@ -28,9 +28,17 @@ import {
   THEME_DEFINITIONS,
 } from "../../utils/themeRegistry";
 import { GoogleGLogo } from "../ai/AIModelSelector";
+import AntigravityLogo from "../common/AntigravityLogo";
 import "../../styles/extensions.css";
 
 function ExtensionBrandIcon({ ext }) {
+  if (ext.iconType === "antigravity") {
+    return (
+      <div className="ext-brand-icon-box" style={{ background: "transparent" }}>
+        <AntigravityLogo size={22} />
+      </div>
+    );
+  }
   if (ext.category === "theme" && ext.palette) {
     return (
       <div className="ext-palette-swatch-box" title={`${ext.name} Color Palette`}>
@@ -105,7 +113,7 @@ function ExtensionBrandIcon({ ext }) {
 const CATEGORIES = [
   { id: "all", label: "All" },
   { id: "theme", label: "🎨 Themes" },
-  { id: "ai", label: "🤖 AI Models" },
+  { id: "ai", label: "🤖 AI Assistant" },
   { id: "formatter", label: "💅 Formatters" },
   { id: "productivity", label: "⚡ Productivity" },
   { id: "language", label: "🌐 Languages" },
@@ -173,11 +181,16 @@ export default function ExtensionsPanel({ onClose }) {
       });
       const nextInstalled = new Set(installedIds).add(ext.id);
       persistInstalled(nextInstalled);
+      window.dispatchEvent(
+        new CustomEvent("vocode-extension-installed", {
+          detail: { extensionId: ext.id, extension: ext },
+        })
+      );
 
       // If it's a theme extension, automatically prompt or activate
       if (ext.themeId) {
         applyThemeExtension(ext.themeId, window.monaco);
-        showBanner(`Installed and activated "${ext.name}" theme!`);
+        showBanner(`Installed and activated "${ext.name}" theme across IDE & website!`);
       } else {
         showBanner(`Installed "${ext.name}"!`);
       }
@@ -193,6 +206,11 @@ export default function ExtensionsPanel({ onClose }) {
     const nextInstalled = new Set(installedIds);
     nextInstalled.delete(ext.id);
     persistInstalled(nextInstalled);
+    window.dispatchEvent(
+      new CustomEvent("vocode-extension-uninstalled", {
+        detail: { extensionId: ext.id, extension: ext },
+      })
+    );
 
     if (ext.themeId && activeThemeId === ext.themeId) {
       applyThemeExtension(null, window.monaco);
@@ -205,7 +223,7 @@ export default function ExtensionsPanel({ onClose }) {
   const handleSetTheme = (ext) => {
     if (!ext.themeId) return;
     applyThemeExtension(ext.themeId, window.monaco);
-    showBanner(`Applied "${ext.name}" color theme!`);
+    showBanner(`Applied "${ext.name}" theme across IDE & website!`);
   };
 
   // Filtered extensions
@@ -369,7 +387,17 @@ export default function ExtensionsPanel({ onClose }) {
                 </div>
 
                 {/* Details Column */}
-                <div className="ext-details-column">
+                <div
+                  className="ext-details-column"
+                  style={{ cursor: "pointer" }}
+                  onClick={() => {
+                    window.dispatchEvent(
+                      new CustomEvent("vocode-open-extension-details", {
+                        detail: { extension: ext },
+                      })
+                    );
+                  }}
+                >
                   <div className="ext-name-row">
                     <h4 className="ext-name" title={ext.name}>
                       {ext.name}
@@ -431,7 +459,7 @@ export default function ExtensionsPanel({ onClose }) {
                             isCurrentActiveTheme ? "active" : ""
                           }`}
                           onClick={() => handleSetTheme(ext)}
-                          title="Apply this color theme to editor"
+                          title="Apply this color theme to IDE & website"
                         >
                           <Palette size={11} />
                           <span>{isCurrentActiveTheme ? "Active" : "Set Theme"}</span>
